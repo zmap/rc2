@@ -3,6 +3,7 @@ package rc2
 import (
 	"encoding/binary"
 	"crypto/cipher"
+	"errors"
 )
 
 var pitable []byte = []byte{
@@ -24,29 +25,29 @@ var pitable []byte = []byte{
     0xc5, 0xf3, 0xdb, 0x47, 0xe5, 0xa5, 0x9c, 0x77, 0x0a, 0xa6, 0x20, 0x68, 0xfe, 0x7f, 0xc1, 0xad, 
 }
 
-func kx_64(ink [8]byte) (outk [64]uint16) {
-	var t1, t8, tm byte = 64, 8, 0xff
+func expandkey(ink []byte, bits uint) (outk [64]uint16) {
 	var kx [128]byte
+
+	t  := byte(len(ink))
+	t8 := byte((bits+7) / 8)
+	tm := byte(0xff >> ((uint(t8) * 8) - bits))
 
 	copy(kx[0:], ink[0:])
 
-	x := kx[7]
-	for i := uint(8); i < 128; i++ {
-		x = pitable[(x + kx[i-8]) & 0xff]
-		kx[i] = x
+	for i := t; i < 128; i++ {
+		// L[i] = PITABLE[L[i-1] + L[i-T]];
+		kx[i] = pitable[kx[i-1] + kx[i-t]]
 	}
 
-	//    L[128-T8] = PITABLE[L[128-T8] & TM];
-
+	// L[128-T8] = PITABLE[L[128-T8] & TM];
 	kx[128-t8] = pitable[kx[128-t8] & tm]
 
-	for i := int(127 - t8); i >= 0; i-- {
-		//      L[i] = PITABLE[L[i+1] XOR L[i+T8]];
-		idx := (kx[i+1] ^ kx[i+int(t8)]) & 0xff
-		kx[i] = pitable[idx]
+	for i := 127 - int(t8); i >= 0; i-- {
+		// L[i] = PITABLE[L[i+1] XOR L[i+T8]];
+		kx[i] = pitable[kx[i+1] ^ kx[byte(i)+t8]]
 	}
 
-	for i := 0; i < int(t1); i++ { 
+	for i := 0; i < len(outk); i++ {
 		outk[i] = binary.LittleEndian.Uint16(kx[i * 2:])
 	}
 
@@ -185,12 +186,21 @@ func (c *rc2cipher) Encrypt(dst, src []byte) {
 	binary.LittleEndian.PutUint16(dst[6:], block[3])
 }
 
-func NewCipher(k [8]byte) cipher.Block { 
-	ret := rc2cipher{
-		xk: kx_64(k),
+func NewCipher(k []byte) (cipher.Block, error) {
+	if len(k) < 1 || len(k) > 128 {
+		return nil, errors.New("rc2: invalid key length 1 <= len(key) <= 128")
 	}
+	return &rc2cipher{ xk: expandkey(k, uint(len(k)*8)) }, nil
+}
 
-	return &ret
+func NewCipherReducedStrength(k []byte, bits uint) (cipher.Block, error) {
+	if len(k) < 1 || len(k) > 128 {
+		return nil, errors.New("rc2: invalid key length (1 <= len(key) <= 128)")
+	}
+	if bits < 1 || bits > 1024 {
+		return nil, errors.New("rc2: invalid number of effective bits (1 <= bits <= 1024)")
+	}
+	return &rc2cipher{ xk: expandkey(k, bits) }, nil
 }
 
 
